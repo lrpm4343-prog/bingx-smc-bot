@@ -3,18 +3,23 @@ import time
 import ccxt
 import requests
 
-# Configuración del Bot de Telegram (puedes usar variables de entorno o ponerlos directos)
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'TU_TOKEN_DE_TELEGRAM')
-CHAT_ID = os.getenv('CHAT_ID', 'TU_CHAT_ID')
+# Configuración de credenciales desde las variables de entorno de Railway
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-def enviar_alerta(mensaje):
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == 'TU_TOKEN_DE_TELEGRAM':
-        print("Telegram no configurado:", mensaje)
+# Inicializar el exchange BingX
+exchange = ccxt.bingx({
+    'enableRateLimit': True,
+})
+
+def send_telegram_message(message):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Error: Credenciales de Telegram no configuradas.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
-        "text": mensaje,
+        "text": message,
         "parse_mode": "Markdown"
     }
     try:
@@ -22,53 +27,55 @@ def enviar_alerta(mensaje):
     except Exception as e:
         print(f"Error al enviar mensaje a Telegram: {e}")
 
-def escanear_mercado():
+def analyze_market():
     print("Iniciando escaneo en BingX...")
     try:
-        exchange = ccxt.bingx({
-            'enableRateLimit': True,
-        })
-        
-        # Cargar mercados de futuros / swap
         markets = exchange.load_markets()
-        # Filtrar pares USDT de futuros
-        symbols = [s for s in markets if '/USDT' in s and markets[s]['swap']]
+        # Filtrar pares USDT de futuros o spot según prefieras
+        symbols = [symbol for symbol in markets if symbol.endswith('/USDT:USDT') or symbol.endswith('/USDT')]
+        
+        # Temporalidades a escanear (ej. '1h', '4h')
+        timeframes = ['1h', '4h']
 
-        for symbol in symbols[:20]: # Escaneando una muestra para evitar límites de velocidad
-            try:
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=24)
-                if len(ohlcv) < 24:
+        for symbol in symbols[:30]: # Limitamos para optimizar velocidad de escaneo
+            for tf in timeframes:
+                try:
+                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
+                    if len(ohlcv) < 20:
+                        continue
+                    
+                    # Calcular rango de compresión en las últimas velas
+                    highs = [candle[2] for candle in ohlcv[-20:]]
+                    lows = [candle[3] for candle in ohlcv[-20:]]
+                    max_high = max(highs)
+                    min_low = min(lows)
+                    current_price = ohlcv[-1][4]
+                    
+                    range_pct = ((max_high - min_low) / min_low) * 100
+
+                    # Condición de compresión estricta (< 3%)
+                    if range_pct < 3.0:
+                        # Estimar sesgo simple basado en la posición del precio actual dentro del rango
+                        bias = "Alcista 🟢 (Cerca del límite superior / Acumulación institucional)" if current_price > ((max_high + min_low) / 2) else "Bajista 🔴 (Cerca del soporte / Posible barrido de liquidez)"
+                        
+                        message = (
+                            f"📊 *Alerta de Compresión / Acumulación*\n"
+                            f"🪙 *Activo:* `{symbol}`\n"
+                            f"⏱️ *Temporalidad:* `{tf}`\n"
+                            f"📉 *Rango:* `{range_pct:.2f}%`\n"
+                            f"🧭 *Sesgo Probable:* {bias}\n"
+                            f"💡 *Patrón estilo SMC detectado.*"
+                        )
+                        send_telegram_message(message)
+                        time.sleep(1) # Pausa breve para evitar saturar la API de Telegram
+                except Exception as e:
                     continue
-                
-                # Análisis básico de rango (Compresión / Acumulación)
-                precios_altos = [x[2] for x in ohlcv]
-                precios_bajos = [x[3] for x in ohlcv]
-                
-                max_precio = max(precios_altos)
-                min_precio = min(precios_bajos)
-                rango_porcentual = ((max_precio - min_precio) / min_precio) * 100
-                
-                # Si el rango en 24 horas es estrecho (ej. menor al 3%), detectamos compresión
-                if rango_porcentual < 3.0:
-                    mensaje = (
-                        f"📊 *Alerta de Compresión / Acumulación*\n"
-                        f"🪙 *Activo:* `{symbol}`\n"
-                        f"📉 *Rango 24h:* `{rango_porcentual:.2f}%`\n"
-                        f"💡 Posible acumulación estilo SMC detectada."
-                    )
-                    enviar_alerta(mensaje)
-                    time.sleep(1)
-            except Exception as e:
-                print(f"Error analizando {symbol}: {e}")
-                
     except Exception as e:
-        print(f"Error general en el exchange: {e}")
+        print(f"Error en el ciclo de mercado: {e}")
 
 if __name__ == "__main__":
     print("Bot iniciado correctamente. Monitoreando mercados...")
-    enviar_alerta("🤖 *Bot de BingX SMC iniciado y operativo.*")
-    
+    send_telegram_message("🚀 *Bot SMC BingX reiniciado y actualizado.* Monitoreando compresiones con temporalidad y sesgo...")
     while True:
-        escanear_mercado()
-        # Espera 1 hora antes del siguiente escaneo
-        time.sleep(3600)
+        analyze_market()
+        time.sleep(900) # Espera 15 minutos antes del próximo escaneo completo
