@@ -28,16 +28,22 @@ def send_telegram_message(message):
         print(f"Error al enviar mensaje a Telegram: {e}")
 
 def analyze_market():
-    print("Iniciando escaneo en BingX...")
+    print("Iniciando escaneo de futuros perpetuos en BingX...")
     try:
+        # Forzar la carga de mercados de futuros/swaps
+        exchange.options['defaultType'] = 'swap'
         markets = exchange.load_markets()
-        # Filtrar pares USDT de futuros o spot según prefieras
-        symbols = [symbol for symbol in markets if symbol.endswith('/USDT:USDT') or symbol.endswith('/USDT')]
         
-        # Temporalidades a escanear (ej. '1h', '4h')
+        # Filtrar estrictamente mercados de futuros perpetuos en USDT (linear swaps)
+        symbols = [
+            symbol for symbol, market in markets.items() 
+            if market.get('linear') == True and market.get('swap') == True and symbol.endswith('/USDT:USDT')
+        ]
+        
+        # Temporalidades a escanear
         timeframes = ['1h', '4h']
 
-        for symbol in symbols[:30]: # Limitamos para optimizar velocidad de escaneo
+        for symbol in symbols: 
             for tf in timeframes:
                 try:
                     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
@@ -55,11 +61,10 @@ def analyze_market():
 
                     # Condición de compresión estricta (< 3%)
                     if range_pct < 3.0:
-                        # Estimar sesgo simple basado en la posición del precio actual dentro del rango
                         bias = "Alcista 🟢 (Cerca del límite superior / Acumulación institucional)" if current_price > ((max_high + min_low) / 2) else "Bajista 🔴 (Cerca del soporte / Posible barrido de liquidez)"
                         
                         message = (
-                            f"📊 *Alerta de Compresión / Acumulación*\n"
+                            f"📊 *Alerta de Compresión (Futuros Perpetuos)*\n"
                             f"🪙 *Activo:* `{symbol}`\n"
                             f"⏱️ *Temporalidad:* `{tf}`\n"
                             f"📉 *Rango:* `{range_pct:.2f}%`\n"
@@ -74,8 +79,8 @@ def analyze_market():
         print(f"Error en el ciclo de mercado: {e}")
 
 if __name__ == "__main__":
-    print("Bot iniciado correctamente. Monitoreando mercados...")
-    send_telegram_message("🚀 *Bot SMC BingX reiniciado y actualizado.* Monitoreando compresiones con temporalidad y sesgo...")
+    print("Bot iniciado correctamente. Monitoreando futuros perpetuos...")
+    send_telegram_message("🚀 *Bot BingX actualizado.* Filtrando exclusivamente *Futuros Perpetuos*...")
     while True:
         analyze_market()
-        time.sleep(900) # Espera 15 minutos antes del próximo escaneo completo
+        time.sleep(900) # Espera 15 minutos antes del próximo escaneo
