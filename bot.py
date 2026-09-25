@@ -28,59 +28,78 @@ def send_telegram_message(message):
         print(f"Error al enviar mensaje a Telegram: {e}")
 
 def analyze_market():
-    print("Iniciando escaneo de futuros perpetuos en BingX...")
+    print("Iniciando escaneo del top de futuros en BingX...")
     try:
-        # Forzar la carga de mercados de futuros/swaps
         exchange.options['defaultType'] = 'swap'
         markets = exchange.load_markets()
         
-        # Filtrar estrictamente mercados de futuros perpetuos en USDT (linear swaps)
-        symbols = [
-            symbol for symbol, market in markets.items() 
-            if market.get('linear') == True and market.get('swap') == True and symbol.endswith('/USDT:USDT')
-        ]
+        # Obtener tickers para evaluar volumen y filtrar solo futuros perpetuos USDT válidos
+        tickers = exchange.fetch_tickers()
+        
+        valid_symbols = []
+        for symbol, market in markets.items():
+            if market.get('linear') == True and market.get('swap') == True and symbol.endswith('/USDT:USDT'):
+                # Evitar tokens extraños o de prueba
+                base_currency = symbol.split('/')[0]
+                if any(bad in base_currency for bad in ['TEST', 'USD', '2USD', 'NCSK', 'UP', 'DOWN']):
+                    continue
+                
+                # Obtener el volumen de 24h para ordenar por liquidez
+                ticker = tickers.get(symbol, {})
+                quote_volume = ticker.get('quoteVolume', 0) or 0
+                valid_symbols.append((symbol, quote_volume))
+        
+        # Ordenar de mayor a menor volumen y seleccionar los más líquidos (ej. los 40 principales del mercado de futuros)
+        valid_symbols.sort(key=lambda x: x[1], reverse=True)
+        top_symbols = [item[0] for item in valid_symbols[:40]]
         
         # Temporalidades a escanear
         timeframes = ['1h', '4h']
 
-        for symbol in symbols: 
+        for symbol in top_symbols: 
             for tf in timeframes:
                 try:
                     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
-                    if len(ohlcv) < 20:
+                    if len(ohlcv) < 30:
                         continue
                     
-                    # Calcular rango de compresión en las últimas velas
+                    # Calcular rango de compresión en las últimas 20 velas
                     highs = [candle[2] for candle in ohlcv[-20:]]
                     lows = [candle[3] for candle in ohlcv[-20:]]
                     max_high = max(highs)
                     min_low = min(lows)
-                    current_price = ohlcv[-1][4]
                     
                     range_pct = ((max_high - min_low) / min_low) * 100
 
                     # Condición de compresión estricta (< 3%)
                     if range_pct < 3.0:
-                        bias = "Alcista 🟢 (Cerca del límite superior / Acumulación institucional)" if current_price > ((max_high + min_low) / 2) else "Bajista 🔴 (Cerca del soporte / Posible barrido de liquidez)"
+                        # Sesgo estructural basado en el impulso previo antes del rango
+                        previous_close = ohlcv[-25][4]
+                        current_close = ohlcv[-1][4]
+                        
+                        if current_close > previous_close:
+                            bias = "🟢 Alta probabilidad de Ruptura Alcista (Continuación institucional)"
+                        else:
+                            bias = "🔴 Alta probabilidad de Ruptura Bajista (Continuación o barrido)"
                         
                         message = (
-                            f"📊 *Alerta de Compresión (Futuros Perpetuos)*\n"
+                            f"📊 *Alerta Top Compresión (Futuros)*\n"
                             f"🪙 *Activo:* `{symbol}`\n"
                             f"⏱️ *Temporalidad:* `{tf}`\n"
                             f"📉 *Rango:* `{range_pct:.2f}%`\n"
-                            f"🧭 *Sesgo Probable:* {bias}\n"
-                            f"💡 *Patrón estilo SMC detectado.*"
+                            f"🧭 *Sesgo Estructural:* {bias}\n"
+                            f"💡 *Zona de alta liquidez lista para expansión.*"
                         )
                         send_telegram_message(message)
-                        time.sleep(1) # Pausa breve para evitar saturar la API de Telegram
+                        time.sleep(1) 
                 except Exception as e:
                     continue
     except Exception as e:
         print(f"Error en el ciclo de mercado: {e}")
 
 if __name__ == "__main__":
-    print("Bot iniciado correctamente. Monitoreando futuros perpetuos...")
-    send_telegram_message("🚀 *Bot BingX actualizado.* Filtrando exclusivamente *Futuros Perpetuos*...")
+    print("Bot con filtro de volumen superior iniciado...")
+    send_telegram_message("🚀 *Bot BingX optimizado.* Escaneando únicamente el *Top de futuros por volumen*...")
     while True:
         analyze_market()
-        time.sleep(900) # Espera 15 minutos antes del próximo escaneo
+        time.sleep(900)
